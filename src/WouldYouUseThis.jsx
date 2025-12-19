@@ -1,69 +1,13 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
 
-const now = Date.now();
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
 const DAY = 24 * 60 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
-
-const sampleIdeas = [
-  { 
-    id: 1, 
-    text: "An app that tells you which friends are awake right now", 
-    upvotes: 24, 
-    downvotes: 3, 
-    createdAt: now - 45 * DAY,
-    comparables: ["Zenly", "Snapchat Maps", "Find My Friends"],
-    isOwn: false
-  },
-  { 
-    id: 2, 
-    text: "A website that generates fake but realistic meeting excuses", 
-    upvotes: 18, 
-    downvotes: 7, 
-    createdAt: now - 20 * DAY,
-    comparables: ["ChatGPT", "Excuse Generator"],
-    isOwn: false
-  },
-  { 
-    id: 3, 
-    text: "Smart glasses that blur your ex if you see them in public", 
-    upvotes: 41, 
-    downvotes: 12, 
-    createdAt: now - 5 * DAY,
-    comparables: ["Ray-Ban Meta", "Snapchat Spectacles"],
-    isOwn: true
-  },
-  { 
-    id: 4, 
-    text: "A service that sends you a physical letter from your future self", 
-    upvotes: 33, 
-    downvotes: 5, 
-    createdAt: now - 2 * DAY,
-    comparables: ["FutureMe", "Letters to My Future Self"],
-    isOwn: false
-  },
-  { 
-    id: 5, 
-    text: "An extension that hides all prices online until checkout", 
-    upvotes: 8, 
-    downvotes: 29, 
-    createdAt: now - 12 * HOUR,
-    comparables: ["Honey", "Capital One Shopping"],
-    isOwn: true
-  },
-  { 
-    id: 6, 
-    text: "A dating app that only matches people with the same coffee order", 
-    upvotes: 19, 
-    downvotes: 2, 
-    createdAt: now - 2 * HOUR,
-    comparables: ["Hinge", "Thursday", "Bumble"],
-    isOwn: false
-  },
-];
-
-const generateComparables = (text) => {
-  return ["Searching...", "for similar apps"];
-};
 
 const TIME_FILTERS = [
   { key: 'today', label: 'Today', ms: DAY },
@@ -74,58 +18,111 @@ const TIME_FILTERS = [
 
 const FIRE_THRESHOLD = 3;
 
+function SpinningLogo({ onClick }) {
+  return (
+    <button 
+      onClick={onClick}
+      className="group flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-zinc-800 to-zinc-900 border border-zinc-700 hover:border-zinc-600 transition-all hover:scale-105"
+    >
+      <span 
+        className="text-xl font-bold bg-gradient-to-br from-emerald-400 to-cyan-400 bg-clip-text text-transparent animate-[spin_3s_ease-in-out_infinite]"
+        style={{ display: 'inline-block' }}
+      >
+        ?
+      </span>
+    </button>
+  );
+}
+
 export default function WouldYouUseThis() {
-  const [ideas, setIdeas] = useState(sampleIdeas);
+  const [ideas, setIdeas] = useState([]);
   const [newIdea, setNewIdea] = useState('');
   const [votedOn, setVotedOn] = useState(new Set());
   const [timeFilter, setTimeFilter] = useState('all');
-  const [signedIn, setSignedIn] = useState(false);
+  const [user, setUser] = useState(null);
   const [showYourIdeas, setShowYourIdeas] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const handleSubmit = (e) => {
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      if (session?.user) loadUserVotes(session.user.id);
+      setLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      if (session?.user) loadUserVotes(session.user.id);
+      else setVotedOn(new Set());
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => { loadIdeas(); }, []);
+
+  async function loadIdeas() {
+    const { data, error } = await supabase
+      .from('ideas_with_votes')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (!error) setIdeas(data || []);
+  }
+
+  async function loadUserVotes(userId) {
+    const { data, error } = await supabase
+      .from('votes')
+      .select('idea_id')
+      .eq('user_id', userId);
+    if (!error && data) setVotedOn(new Set(data.map(v => v.idea_id)));
+  }
+
+  async function handleSignIn() {
+    await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin }
+    });
+  }
+
+  async function handleSignOut() {
+    await supabase.auth.signOut();
+    setShowProfileMenu(false);
+    setShowYourIdeas(false);
+  }
+
+  async function handleSubmit(e) {
     e.preventDefault();
-    if (!newIdea.trim() || !signedIn) return;
-    
-    const idea = {
-      id: Date.now(),
-      text: newIdea.trim(),
-      upvotes: 0,
-      downvotes: 0,
-      createdAt: Date.now(),
-      comparables: generateComparables(newIdea.trim()),
-      isOwn: true,
-    };
-    
-    setIdeas([idea, ...ideas]);
-    setNewIdea('');
-  };
+    if (!newIdea.trim() || !user) return;
+    const { error } = await supabase
+      .from('ideas')
+      .insert([{ text: newIdea.trim(), user_id: user.id }]);
+    if (!error) {
+      setNewIdea('');
+      loadIdeas();
+    }
+  }
 
-  const handleVote = (id, isUpvote) => {
-    if (votedOn.has(id) || !signedIn) return;
-    
-    setVotedOn(new Set([...votedOn, id]));
-    setIdeas(ideas.map(idea => {
-      if (idea.id === id) {
-        return {
-          ...idea,
-          upvotes: isUpvote ? idea.upvotes + 1 : idea.upvotes,
-          downvotes: !isUpvote ? idea.downvotes + 1 : idea.downvotes,
-        };
-      }
-      return idea;
-    }));
-  };
+  async function handleVote(ideaId, isUpvote) {
+    if (votedOn.has(ideaId) || !user) return;
+    const { error } = await supabase
+      .from('votes')
+      .insert([{ idea_id: ideaId, user_id: user.id, vote_type: isUpvote ? 'up' : 'down' }]);
+    if (!error) {
+      setVotedOn(new Set([...votedOn, ideaId]));
+      loadIdeas();
+    }
+  }
 
   const getScore = (idea) => idea.upvotes - idea.downvotes;
   
   const getVelocity = (idea) => {
-    const hoursOld = Math.max((Date.now() - idea.createdAt) / HOUR, 1);
+    const hoursOld = Math.max((Date.now() - new Date(idea.created_at).getTime()) / HOUR, 1);
     return getScore(idea) / hoursOld;
   };
   
   const isOnFire = (idea) => {
-    const hoursOld = (Date.now() - idea.createdAt) / HOUR;
+    const hoursOld = (Date.now() - new Date(idea.created_at).getTime()) / HOUR;
     return hoursOld < 48 && getVelocity(idea) >= FIRE_THRESHOLD;
   };
 
@@ -133,37 +130,37 @@ export default function WouldYouUseThis() {
   const cutoff = Date.now() - activeFilter.ms;
 
   let filteredIdeas = ideas
-    .filter(idea => idea.createdAt >= cutoff)
+    .filter(idea => new Date(idea.created_at).getTime() >= cutoff)
     .sort((a, b) => getScore(b) - getScore(a));
 
-  if (showYourIdeas) {
-    filteredIdeas = ideas.filter(idea => idea.isOwn).sort((a, b) => b.createdAt - a.createdAt);
+  if (showYourIdeas && user) {
+    filteredIdeas = ideas.filter(idea => idea.user_id === user.id)
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   }
 
-  const yourIdeasCount = ideas.filter(idea => idea.isOwn).length;
+  const yourIdeasCount = user ? ideas.filter(idea => idea.user_id === user.id).length : 0;
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center">
+        <div className="text-zinc-500">Loading...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      {/* Top Nav */}
       <nav className="border-b border-zinc-800 sticky top-0 bg-zinc-950/90 backdrop-blur-sm z-10">
         <div className="max-w-xl mx-auto px-4 h-14 flex items-center justify-between">
-          <button 
-            onClick={() => setShowYourIdeas(false)}
-            className="font-bold text-lg tracking-tight hover:text-white transition-colors"
-          >
-            WYUT?
-          </button>
+          <SpinningLogo onClick={() => setShowYourIdeas(false)} />
           
           <div className="flex items-center gap-2">
-            {signedIn ? (
+            {user ? (
               <>
-                {/* Your Ideas Button */}
                 <button
                   onClick={() => setShowYourIdeas(!showYourIdeas)}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors ${
-                    showYourIdeas 
-                      ? 'bg-zinc-800 text-zinc-100' 
-                      : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900'
+                    showYourIdeas ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-900'
                   }`}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -171,33 +168,26 @@ export default function WouldYouUseThis() {
                   </svg>
                   <span>Your Ideas</span>
                   {yourIdeasCount > 0 && (
-                    <span className="bg-zinc-700 text-zinc-300 text-xs px-1.5 py-0.5 rounded-full">
-                      {yourIdeasCount}
-                    </span>
+                    <span className="bg-zinc-700 text-zinc-300 text-xs px-1.5 py-0.5 rounded-full">{yourIdeasCount}</span>
                   )}
                 </button>
 
-                {/* Profile Button */}
                 <div className="relative">
                   <button
                     onClick={() => setShowProfileMenu(!showProfileMenu)}
                     className="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-400 to-cyan-500 flex items-center justify-center text-xs font-bold text-zinc-900"
                   >
-                    Y
+                    {user.email?.[0]?.toUpperCase() || '?'}
                   </button>
                   
                   {showProfileMenu && (
                     <div className="absolute right-0 top-full mt-2 w-48 bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl py-1">
                       <div className="px-3 py-2 border-b border-zinc-800">
-                        <p className="text-sm text-zinc-100">you@example.com</p>
+                        <p className="text-sm text-zinc-100 truncate">{user.email}</p>
                         <p className="text-xs text-zinc-500">Signed in with Google</p>
                       </div>
                       <button
-                        onClick={() => {
-                          setSignedIn(false);
-                          setShowProfileMenu(false);
-                          setShowYourIdeas(false);
-                        }}
+                        onClick={handleSignOut}
                         className="w-full text-left px-3 py-2 text-sm text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
                       >
                         Sign out
@@ -208,7 +198,7 @@ export default function WouldYouUseThis() {
               </>
             ) : (
               <button
-                onClick={() => setSignedIn(true)}
+                onClick={handleSignIn}
                 className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 px-3 py-1.5 rounded-lg text-sm hover:border-zinc-700 transition-colors"
               >
                 <svg className="w-4 h-4" viewBox="0 0 24 24">
@@ -225,40 +215,28 @@ export default function WouldYouUseThis() {
       </nav>
 
       <div className="max-w-xl mx-auto px-4 py-8">
-        {/* Header - only show on main feed */}
         {!showYourIdeas && (
           <header className="text-center mb-8">
-            <h1 className="text-3xl font-bold tracking-tight mb-2">
-              Would You Use This?
-            </h1>
-            <p className="text-zinc-500 text-sm">
-              Post an idea. See if anyone cares.
-            </p>
+            <h1 className="text-3xl font-bold tracking-tight mb-2">Would You Use This?</h1>
+            <p className="text-zinc-500 text-sm">Post an idea. See if anyone cares.</p>
           </header>
         )}
 
-        {/* Your Ideas Header */}
         {showYourIdeas && (
           <header className="mb-8">
             <div className="flex items-center gap-3 mb-2">
-              <button 
-                onClick={() => setShowYourIdeas(false)}
-                className="text-zinc-500 hover:text-zinc-300 transition-colors"
-              >
+              <button onClick={() => setShowYourIdeas(false)} className="text-zinc-500 hover:text-zinc-300 transition-colors">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M19 12H5M12 19l-7-7 7-7" />
                 </svg>
               </button>
               <h1 className="text-2xl font-bold tracking-tight">Your Ideas</h1>
             </div>
-            <p className="text-zinc-500 text-sm">
-              {yourIdeasCount} idea{yourIdeasCount !== 1 ? 's' : ''} posted
-            </p>
+            <p className="text-zinc-500 text-sm">{yourIdeasCount} idea{yourIdeasCount !== 1 ? 's' : ''} posted</p>
           </header>
         )}
 
-        {/* Post form */}
-        {signedIn && !showYourIdeas && (
+        {user && !showYourIdeas && (
           <form onSubmit={handleSubmit} className="mb-8">
             <div className="flex gap-2">
               <input
@@ -269,20 +247,14 @@ export default function WouldYouUseThis() {
                 maxLength={140}
                 className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-3 text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-zinc-600 transition-colors"
               />
-              <button
-                type="submit"
-                className="bg-zinc-100 text-zinc-900 font-medium px-5 py-3 rounded-lg hover:bg-white transition-colors"
-              >
+              <button type="submit" className="bg-zinc-100 text-zinc-900 font-medium px-5 py-3 rounded-lg hover:bg-white transition-colors">
                 Post
               </button>
             </div>
-            <p className="text-zinc-600 text-xs mt-2 text-right">
-              {newIdea.length}/140
-            </p>
+            <p className="text-zinc-600 text-xs mt-2 text-right">{newIdea.length}/140</p>
           </form>
         )}
 
-        {/* Time filter - only show on main feed */}
         {!showYourIdeas && (
           <div className="flex gap-1 mb-6 bg-zinc-900 p-1 rounded-lg">
             {TIME_FILTERS.map(filter => (
@@ -290,9 +262,7 @@ export default function WouldYouUseThis() {
                 key={filter.key}
                 onClick={() => setTimeFilter(filter.key)}
                 className={`flex-1 px-3 py-2 text-sm rounded-md transition-colors ${
-                  timeFilter === filter.key
-                    ? 'bg-zinc-800 text-zinc-100'
-                    : 'text-zinc-500 hover:text-zinc-300'
+                  timeFilter === filter.key ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'
                 }`}
               >
                 {filter.label}
@@ -301,7 +271,6 @@ export default function WouldYouUseThis() {
           </div>
         )}
 
-        {/* Ideas list */}
         <div className="space-y-3">
           {filteredIdeas.length === 0 ? (
             <div className="text-center py-12 text-zinc-600">
@@ -316,40 +285,35 @@ export default function WouldYouUseThis() {
               const score = getScore(idea);
               const hasVoted = votedOn.has(idea.id);
               const onFire = isOnFire(idea);
+              const isOwn = user && idea.user_id === user.id;
 
               return (
                 <div
                   key={idea.id}
                   className={`bg-zinc-900 border rounded-lg p-4 flex items-start gap-4 ${
-                    onFire ? 'border-orange-500/50' : idea.isOwn && signedIn ? 'border-zinc-700' : 'border-zinc-800'
+                    onFire ? 'border-orange-500/50' : isOwn ? 'border-zinc-700' : 'border-zinc-800'
                   }`}
                 >
                   <div className="flex flex-col items-center gap-1 min-w-[48px]">
                     <button
                       onClick={() => handleVote(idea.id, true)}
-                      disabled={!signedIn || hasVoted}
+                      disabled={!user || hasVoted}
                       className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
-                        !signedIn || hasVoted
-                          ? 'text-zinc-700 cursor-not-allowed'
-                          : 'text-zinc-500 hover:text-emerald-400 hover:bg-zinc-800'
+                        !user || hasVoted ? 'text-zinc-700 cursor-not-allowed' : 'text-zinc-500 hover:text-emerald-400 hover:bg-zinc-800'
                       }`}
                     >
                       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
                         <path d="M8 12V4M8 4L4 8M8 4L12 8" />
                       </svg>
                     </button>
-                    <span className={`text-sm font-medium ${
-                      score > 0 ? 'text-emerald-400' : score < 0 ? 'text-red-400' : 'text-zinc-500'
-                    }`}>
+                    <span className={`text-sm font-medium ${score > 0 ? 'text-emerald-400' : score < 0 ? 'text-red-400' : 'text-zinc-500'}`}>
                       {score > 0 ? '+' : ''}{score}
                     </span>
                     <button
                       onClick={() => handleVote(idea.id, false)}
-                      disabled={!signedIn || hasVoted}
+                      disabled={!user || hasVoted}
                       className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
-                        !signedIn || hasVoted
-                          ? 'text-zinc-700 cursor-not-allowed'
-                          : 'text-zinc-500 hover:text-red-400 hover:bg-zinc-800'
+                        !user || hasVoted ? 'text-zinc-700 cursor-not-allowed' : 'text-zinc-500 hover:text-red-400 hover:bg-zinc-800'
                       }`}
                     >
                       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
@@ -364,26 +328,9 @@ export default function WouldYouUseThis() {
                           <span>🔥</span> Rising
                         </span>
                       )}
-                      {idea.isOwn && signedIn && (
-                        <span className="text-xs text-zinc-600">Your idea</span>
-                      )}
+                      {isOwn && <span className="text-xs text-zinc-600">Your idea</span>}
                     </div>
-                    <p className="text-zinc-200 leading-relaxed mb-2">
-                      {idea.text}
-                    </p>
-                    {idea.comparables && idea.comparables.length > 0 && (
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-zinc-600 text-xs">Similar:</span>
-                        {idea.comparables.map((app, i) => (
-                          <span 
-                            key={i}
-                            className="text-xs bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded"
-                          >
-                            {app}
-                          </span>
-                        ))}
-                      </div>
-                    )}
+                    <p className="text-zinc-200 leading-relaxed">{idea.text}</p>
                   </div>
                 </div>
               );
